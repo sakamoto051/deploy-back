@@ -1,54 +1,43 @@
-FROM ubuntu:22.04
+FROM php:8.2-apache
+SHELL ["/bin/bash", "-oeux", "pipefail", "-c"]
 
-LABEL maintainer="Taylor Otwell"
+ENV COMPOSER_ALLOW_SUPERUSER=1 \
+  COMPOSER_HOME=/composer
 
-ARG NODE_VERSION=18
-ARG POSTGRES_VERSION=15
+COPY --from=composer:2.2 /usr/bin/composer /usr/bin/composer
 
-WORKDIR /var/www/html
+RUN apt-get update && \
+  apt-get -y install git unzip libzip-dev libicu-dev libonig-dev libpq-dev libfreetype6-dev libjpeg62-turbo-dev libpng-dev  && \
+  apt-get clean && \
+  rm -rf /var/lib/apt/lists/* && \
+  docker-php-ext-install intl pdo_mysql zip bcmath
 
-ENV DEBIAN_FRONTEND noninteractive
-ENV TZ=UTC
+RUN pecl install xdebug && \
+    docker-php-ext-enable xdebug
 
-RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+RUN docker-php-ext-configure gd --with-freetype=/usr/include/ --with-jpeg=/usr/include/ && \
+    docker-php-ext-install -j$(nproc) gd
 
-RUN apt-get update \
-    && apt-get install -y gnupg gosu curl ca-certificates zip unzip git supervisor sqlite3 libcap2-bin libpng-dev python2 dnsutils librsvg2-bin fswatch \
-    && curl -sS 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x14aa40ec0831756756d7f66c4f4ea0aae5267a6c' | gpg --dearmor | tee /etc/apt/keyrings/ppa_ondrej_php.gpg > /dev/null \
-    && echo "deb [signed-by=/etc/apt/keyrings/ppa_ondrej_php.gpg] https://ppa.launchpadcontent.net/ondrej/php/ubuntu jammy main" > /etc/apt/sources.list.d/ppa_ondrej_php.list \
-    && apt-get update \
-    && apt-get install -y php8.2-cli php8.2-dev \
-       php8.2-pgsql php8.2-sqlite3 php8.2-gd php8.2-imagick \
-       php8.2-curl \
-       php8.2-imap php8.2-mysql php8.2-mbstring \
-       php8.2-xml php8.2-zip php8.2-bcmath php8.2-soap \
-       php8.2-intl php8.2-readline \
-       php8.2-ldap \
-       php8.2-msgpack php8.2-igbinary php8.2-redis php8.2-swoole \
-       php8.2-memcached php8.2-pcov php8.2-xdebug \
-    && curl -sLS https://getcomposer.org/installer | php -- --install-dir=/usr/bin/ --filename=composer \
-    && curl -sLS https://deb.nodesource.com/setup_$NODE_VERSION.x | bash - \
-    && apt-get install -y nodejs \
-    && npm install -g npm \
-    && curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | gpg --dearmor | tee /etc/apt/keyrings/yarn.gpg >/dev/null \
-    && echo "deb [signed-by=/etc/apt/keyrings/yarn.gpg] https://dl.yarnpkg.com/debian/ stable main" > /etc/apt/sources.list.d/yarn.list \
-    && curl -sS https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | tee /etc/apt/keyrings/pgdg.gpg >/dev/null \
-    && echo "deb [signed-by=/etc/apt/keyrings/pgdg.gpg] http://apt.postgresql.org/pub/repos/apt jammy-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
-    && apt-get update \
-    && apt-get install -y yarn \
-    && apt-get install -y mysql-client \
-    && apt-get install -y postgresql-client-$POSTGRES_VERSION \
-    && apt-get -y autoremove \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+RUN unzip awscliv2.zip
+RUN ./aws/install
 
-RUN setcap "cap_net_bind_service=+ep" /usr/bin/php8.2
+RUN mv /etc/apache2/mods-available/rewrite.load /etc/apache2/mods-enabled
+RUN /bin/sh -c a2enmod rewrite
+WORKDIR /var/www/app
+COPY . /var/www/app
+COPY ./docker/8.2/000-default.conf /etc/apache2/sites-available/000-default.conf
+COPY ./docker/8.2/php.ini /usr/local/etc/php/php.ini
+RUN ls
 
-COPY docker/8.2/start-container /usr/local/bin/start-container
-COPY docker/8.2/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
-COPY docker/8.2/php.ini /etc/php/8.2/cli/conf.d/99-sail.ini
-RUN chmod +x /usr/local/bin/start-container
+RUN composer require predis/predis
 
-EXPOSE 8000
-
-ENTRYPOINT ["start-container"]
+RUN composer install \
+  && chmod -R 777 storage bootstrap/cache public/
+RUN php artisan config:cache --env=development
+RUN php artisan route:cache
+RUN php artisan view:cache
+RUN curl -sL https://deb.nodesource.com/setup_lts.x | bash -
+RUN apt-get install -y nodejs
+RUN npm install npm@latest
+RUN npm run build
