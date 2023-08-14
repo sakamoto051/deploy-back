@@ -28,7 +28,6 @@ WORKDIR /var/www/app
 COPY . /var/www/app
 COPY ./docker/8.2/000-default.conf /etc/apache2/sites-available/000-default.conf
 COPY ./docker/8.2/php.ini /usr/local/etc/php/php.ini
-RUN ls
 
 RUN composer require predis/predis
 
